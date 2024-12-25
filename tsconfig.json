@@ -1,11 +1,22 @@
 {
-    "compilerOptions": {
-        "outDir": "./built",
-        "allowJs": true,
-        "target": "es2018",
-        "checkJs": true,
-        "module": "commonjs",
-        "esModuleInterop": true,
-        "allowSyntheticDefaultImports": true
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020", "ES2019", "ES2018", "ES2017", "ES2016", "ES2015", "DOM"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "*": ["node_modules/*"]
     }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }
