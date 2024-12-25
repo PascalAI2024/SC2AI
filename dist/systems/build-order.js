@@ -1,82 +1,130 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createBuildOrderSystem = createBuildOrderSystem;
-const create_system_1 = require("../utils/create-system");
+exports.createBuildOrderManager = createBuildOrderManager;
+const enums_1 = require("../constants/enums");
 const logger_1 = require("../utils/logger");
-const unit_type_1 = require("../constants/unit-type");
-const upgrade_1 = require("../constants/upgrade");
-class BuildOrderSystem extends create_system_1.System {
-    constructor(options) {
-        super({
-            name: 'BuildOrderSystem',
-            type: 'build',
-            defaultOptions: options.defaultOptions,
-            buildOrder: [
-                [16, { type: 'build', unit: unit_type_1.ASSIMILATOR }],
-                [17, { type: 'build', unit: unit_type_1.GATEWAY }],
-                [20, { type: 'build', unit: unit_type_1.NEXUS }],
-                [21, { type: 'build', unit: unit_type_1.CYBERNETICSCORE }],
-                [26, { type: 'build', unit: unit_type_1.TWILIGHTCOUNCIL }],
-                [34, { type: 'upgrade', upgrade: upgrade_1.CHARGE }],
-                [34, { type: 'build', unit: unit_type_1.GATEWAY, count: 7 }],
-            ],
-            async onStep({ resources }) {
-                try {
-                    const { units, actions } = resources.get();
-                    // Worker production
-                    if (!this.state.buildComplete) {
-                        const nexuses = units.getById(unit_type_1.NEXUS, { buildProgress: 1 });
-                        const currentWorkers = units.getWorkers().length;
-                        if (currentWorkers < this.state.workerTarget) {
-                            await Promise.all(nexuses.map(nexus => {
-                                if (!nexus.orders || nexus.orders.length === 0) {
-                                    return actions.train(unit_type_1.PROBE, nexus);
-                                }
-                            }));
-                        }
-                    }
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in BuildOrderSystem onStep: ${error}`, 'error');
-                }
+class BuildOrderManager {
+    constructor() {
+        this.state = {
+            currentPhase: 'early',
+            supplyThresholds: {
+                workers: 22,
+                firstExpansion: 36,
+                armyTransition: 44
             },
-            async onUnitFinished({ resources }, unit) {
-                try {
-                    if (unit.isGasMine()) {
-                        const { units, actions } = resources.get();
-                        const threeWorkers = units.getClosest(unit.pos, units.getMineralWorkers(), 3);
-                        threeWorkers.forEach(worker => worker.labels.set('gasWorker', true));
-                        await actions.mine(threeWorkers, unit);
-                    }
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in BuildOrderSystem onUnitFinished: ${error}`, 'error');
-                }
-            },
-            async onUnitCreated({ resources }, unit) {
-                try {
-                    if (unit.isWorker()) {
-                        const { actions } = resources.get();
-                        return actions.gather(unit);
-                    }
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in BuildOrderSystem onUnitCreated: ${error}`, 'error');
-                }
-            },
-            async buildComplete() {
-                try {
-                    this.setState({ buildComplete: true });
-                    logger_1.Logger.log('Build order completed');
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in BuildOrderSystem buildComplete: ${error}`, 'error');
-                }
+            buildQueue: []
+        };
+        this._system = {};
+    }
+    pause() {
+        logger_1.Logger.log('Build order manager paused');
+    }
+    unpause() {
+        logger_1.Logger.log('Build order manager resumed');
+    }
+    setState(newState) {
+        this.state = { ...this.state, ...newState };
+    }
+    setup(world) {
+        const resources = world.resources.get();
+        const { race } = world.agent.settings;
+        // Race-specific build order initialization
+        switch (race) {
+            case enums_1.Race.Protoss:
+                this.initProtossBuildOrder();
+                break;
+            case enums_1.Race.Terran:
+                this.initTerranBuildOrder();
+                break;
+            case enums_1.Race.Zerg:
+                this.initZergBuildOrder();
+                break;
+            default:
+                logger_1.Logger.log('No specific build order for random race');
+        }
+        logger_1.Logger.log(`Build order initialized for ${enums_1.Race[race]}`);
+    }
+    initProtossBuildOrder() {
+        // Standard Protoss 2-Gate Zealot Rush build order
+        this.state.buildQueue = [
+            { unitType: 34, priority: 1 }, // Probe
+            { unitType: 34, priority: 1 },
+            { unitType: 34, priority: 1 },
+            { unitType: 63, priority: 2 }, // Gateway
+            { unitType: 34, priority: 1 },
+            { unitType: 63, priority: 2 }, // Second Gateway
+            { unitType: 65, priority: 3 } // Zealot
+        ];
+    }
+    initTerranBuildOrder() {
+        // Standard Terran Marine Rush build order
+        this.state.buildQueue = [
+            { unitType: 45, priority: 1 }, // SCV
+            { unitType: 45, priority: 1 },
+            { unitType: 45, priority: 1 },
+            { unitType: 48, priority: 2 }, // Barracks
+            { unitType: 48, priority: 2 }, // Second Barracks
+            { unitType: 51, priority: 3 } // Marine
+        ];
+    }
+    initZergBuildOrder() {
+        // Standard Zerg Zergling Rush build order
+        this.state.buildQueue = [
+            { unitType: 104, priority: 1 }, // Drone
+            { unitType: 104, priority: 1 },
+            { unitType: 104, priority: 1 },
+            { unitType: 106, priority: 2 }, // Spawning Pool
+            { unitType: 104, priority: 1 },
+            { unitType: 105, priority: 3 } // Zergling
+        ];
+    }
+    async executeNextBuildStep(world) {
+        const resources = world.resources.get();
+        const { units, actions } = resources;
+        // Check current supply and phase
+        const currentSupply = resources.frame.getObservation().playerCommon.foodUsed;
+        this.updateGamePhase(currentSupply);
+        // Find next buildable unit
+        const nextUnit = this.state.buildQueue.shift();
+        if (nextUnit) {
+            const townhalls = units.getByType(this.getTownhallType(world.agent.settings.race));
+            if (townhalls.length > 0 && world.agent.canAfford(nextUnit.unitType)) {
+                await actions.train(nextUnit.unitType, townhalls[0]);
+                logger_1.Logger.log(`Trained unit: ${nextUnit.unitType}`);
             }
-        });
+            else {
+                // Put unit back in queue if can't be built
+                this.state.buildQueue.unshift(nextUnit);
+            }
+        }
+    }
+    updateGamePhase(currentSupply) {
+        if (currentSupply < this.state.supplyThresholds.armyTransition) {
+            this.state.currentPhase = 'early';
+        }
+        else if (currentSupply < 66) {
+            this.state.currentPhase = 'mid';
+        }
+        else {
+            this.state.currentPhase = 'late';
+        }
+    }
+    getTownhallType(race) {
+        switch (race) {
+            case enums_1.Race.Protoss: return 59; // Nexus
+            case enums_1.Race.Terran: return 41; // Command Center
+            case enums_1.Race.Zerg: return 101; // Hatchery
+            default: return 59; // Default to Protoss
+        }
     }
 }
-function createBuildOrderSystem(options) {
-    return new BuildOrderSystem(options);
+function createBuildOrderManager() {
+    const manager = new BuildOrderManager();
+    const wrapper = async (world) => {
+        await manager.executeNextBuildStep(world);
+    };
+    wrapper._system = manager;
+    wrapper.setup = manager.setup.bind(manager);
+    return wrapper;
 }
 //# sourceMappingURL=build-order.js.map

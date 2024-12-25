@@ -1,132 +1,143 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createCombatSystem = createCombatSystem;
-const create_system_1 = require("../utils/create-system");
+exports.createCombatManager = createCombatManager;
+const enums_1 = require("../constants/enums");
 const logger_1 = require("../utils/logger");
-class CombatSystem extends create_system_1.System {
-    organizeArmy(combatUnits) {
-        const groups = [];
-        // Main army group (70% of forces)
-        const mainArmySize = Math.floor(combatUnits.length * 0.7);
-        const mainArmy = combatUnits.slice(0, mainArmySize);
-        if (mainArmy.length > 0) {
-            groups.push({
-                units: mainArmy,
-                position: this.calculateArmyPosition(mainArmy),
-                type: 'MAIN',
-                status: this.state.attacking ? 'ATTACKING' : 'IDLE'
-            });
-        }
-        // Harassment squad (remaining units)
-        const harassSquad = combatUnits.slice(mainArmySize);
-        if (harassSquad.length > 0) {
-            groups.push({
-                units: harassSquad,
-                position: this.calculateArmyPosition(harassSquad),
-                type: 'HARASS',
-                status: this.state.harassmentActive ? 'ATTACKING' : 'IDLE'
-            });
-        }
-        return groups;
+class CombatManager {
+    constructor() {
+        this.state = {
+            armyComposition: {},
+            defensivePositions: [],
+            attackThreshold: 0.7, // 70% army strength
+            retreatThreshold: 0.3 // 30% army strength
+        };
+        this._system = {};
     }
-    calculateArmyPosition(units) {
-        const positions = units.map(u => ({ x: u.pos.x, y: u.pos.y }));
-        return {
-            x: positions.reduce((sum, pos) => sum + pos.x, 0) / positions.length,
-            y: positions.reduce((sum, pos) => sum + pos.y, 0) / positions.length
+    pause() {
+        logger_1.Logger.log('Combat manager paused');
+    }
+    unpause() {
+        logger_1.Logger.log('Combat manager resumed');
+    }
+    setState(newState) {
+        this.state = { ...this.state, ...newState };
+    }
+    setup(world) {
+        const resources = world.resources.get();
+        const { race } = world.agent.settings;
+        // Race-specific army composition
+        switch (race) {
+            case enums_1.Race.Protoss:
+                this.initProtossCombat();
+                break;
+            case enums_1.Race.Terran:
+                this.initTerranCombat();
+                break;
+            case enums_1.Race.Zerg:
+                this.initZergCombat();
+                break;
+            default:
+                logger_1.Logger.log('No specific combat strategy for random race');
+        }
+        logger_1.Logger.log(`Combat strategy initialized for ${enums_1.Race[race]}`);
+    }
+    initProtossCombat() {
+        // Protoss composition: Zealots, Stalkers, Sentries
+        this.state.armyComposition = {
+            65: 0.5, // Zealot
+            74: 0.3, // Stalker
+            77: 0.2 // Sentry
         };
     }
-    async controlArmyGroup(group, { resources }) {
-        const resourcesObj = resources.get();
-        switch (group.type) {
-            case 'MAIN':
-                await this.controlMainArmy(group, resourcesObj);
-                break;
-            case 'HARASS':
-                await this.controlHarassSquad(group, resourcesObj);
-                break;
+    initTerranCombat() {
+        // Terran composition: Marines, Marauders, Medivacs
+        this.state.armyComposition = {
+            51: 0.6, // Marine
+            54: 0.3, // Marauder
+            88: 0.1 // Medivac
+        };
+    }
+    initZergCombat() {
+        // Zerg composition: Zerglings, Banelings, Roaches
+        this.state.armyComposition = {
+            105: 0.5, // Zergling
+            106: 0.3, // Baneling
+            108: 0.2 // Roach
+        };
+    }
+    async manageCombat(world) {
+        const resources = world.resources.get();
+        const { units, actions, map } = resources;
+        // Get combat units
+        const combatUnits = units.getCombatUnits();
+        const enemyUnits = units.getById(0, { alliance: 'enemy' });
+        // Calculate army strength
+        const armyStrength = this.calculateArmyStrength(combatUnits);
+        const enemyStrength = this.calculateArmyStrength(enemyUnits);
+        // Determine combat strategy based on army strength
+        if (armyStrength / enemyStrength >= this.state.attackThreshold) {
+            await this.attackMove(world, combatUnits);
+        }
+        else if (armyStrength / enemyStrength <= this.state.retreatThreshold) {
+            await this.defensiveRetreat(world, combatUnits);
+        }
+        else {
+            await this.maintainFormation(world, combatUnits);
         }
     }
-    async controlMainArmy(group, resources) {
-        const { actions, map } = resources;
-        if (group.units.length < this.state.armySize) {
-            // Army too small, keep defensive
-            const defensivePosition = map.getCombatRally();
-            return actions.attackMove(group.units, defensivePosition);
-        }
-        if (this.state.attacking) {
-            const [enemyMain, enemyNat] = map.getExpansions('enemy');
-            // Attack enemy natural first, then main
-            return Promise.all([enemyNat, enemyMain].map(expansion => {
-                return actions.attackMove(group.units, expansion.townhallPosition, true);
-            }));
+    calculateArmyStrength(units) {
+        return units.reduce((strength, unit) => {
+            // Simple strength calculation based on unit type
+            const unitStrengthMap = {
+                // Protoss
+                65: 2, // Zealot
+                74: 3, // Stalker
+                77: 1, // Sentry
+                // Terran
+                51: 1, // Marine
+                54: 2, // Marauder
+                88: 0.5, // Medivac
+                // Zerg
+                105: 0.5, // Zergling
+                106: 1, // Baneling
+                108: 2 // Roach
+            };
+            return strength + (unitStrengthMap[unit.type] || 1);
+        }, 0);
+    }
+    async attackMove(world, units) {
+        const resources = world.resources.get();
+        const { map } = resources;
+        // Find enemy starting position
+        const enemyStartPos = map.getStartingPositions()[1];
+        if (enemyStartPos) {
+            await resources.actions.attackMove(units, enemyStartPos);
+            logger_1.Logger.log('Attacking enemy base');
         }
     }
-    async controlHarassSquad(group, resources) {
-        const { actions, map } = resources;
-        if (!this.state.harassmentActive || group.units.length < 4)
-            return;
-        // Find vulnerable harassment targets (worker lines, tech structures)
-        const targets = map.getExpansions('enemy')
-            .map(exp => exp.townhallPosition)
-            .filter(pos => this.isValidHarassTarget(pos));
-        if (targets.length > 0) {
-            // Rotate between harassment targets
-            const targetIndex = Math.floor(Date.now() / 10000) % targets.length;
-            return actions.attackMove(group.units, targets[targetIndex], true);
-        }
+    async defensiveRetreat(world, units) {
+        const resources = world.resources.get();
+        const { map } = resources;
+        // Retreat to main base
+        const mainBasePos = map.getExpansions('self')[0].townhallPosition;
+        await resources.actions.move(units, mainBasePos, true);
+        logger_1.Logger.log('Retreating to main base');
     }
-    isValidHarassTarget(position) {
-        // Add logic to determine if a position is a good harassment target
-        // For now, just return true
-        return true;
-    }
-    constructor(options) {
-        super({
-            name: 'CombatSystem',
-            type: 'combat',
-            defaultOptions: options.defaultOptions,
-            async onStep({ resources }) {
-                try {
-                    const { units, actions, map } = resources.get();
-                    // Get all our combat units
-                    const combatUnits = units.getCombatUnits();
-                    if (combatUnits.length === 0)
-                        return;
-                    // Split army into main force and harassment squad
-                    const armyGroups = this.organizeArmy(combatUnits);
-                    // Handle each army group
-                    for (const armyGroup of armyGroups) {
-                        await this.controlArmyGroup(armyGroup, { resources });
-                    }
-                    // Update state
-                    this.setState({
-                        armySize: combatUnits.length,
-                        attacking: armyGroups.some((group) => group.status === 'ATTACKING')
-                    });
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in CombatSystem onStep: ${error}`, 'error');
-                }
-            },
-            async onUnitDestroyed({ resources }, unit) {
-                try {
-                    if (unit.alliance === 'self' && unit.isCombatUnit()) {
-                        // Adjust army size and potentially retreat if too many losses
-                        const remainingArmy = resources.get().units.getCombatUnits();
-                        if (remainingArmy.length < this.state.armySize * 0.6) {
-                            this.setState({ attacking: false });
-                        }
-                    }
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in CombatSystem onUnitDestroyed: ${error}`, 'error');
-                }
-            }
-        });
+    async maintainFormation(world, units) {
+        const resources = world.resources.get();
+        const combatRally = resources.map.getCombatRally();
+        // Group units at combat rally point
+        await resources.actions.move(units, combatRally, true);
+        logger_1.Logger.log('Maintaining defensive formation');
     }
 }
-function createCombatSystem(options) {
-    return new CombatSystem(options);
+function createCombatManager() {
+    const manager = new CombatManager();
+    const wrapper = async (world) => {
+        await manager.manageCombat(world);
+    };
+    wrapper._system = manager;
+    wrapper.setup = manager.setup.bind(manager);
+    return wrapper;
 }
 //# sourceMappingURL=combat.js.map

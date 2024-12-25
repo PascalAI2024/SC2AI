@@ -1,37 +1,31 @@
-import { System, SystemState } from '../utils/create-system';
-interface Position {
-    x: number;
-    y: number;
-}
-interface CombatState extends SystemState {
-    armySize: number;
-    attacking: boolean;
-    harassmentActive: boolean;
-    mainArmyComposition: {
-        zealot: number;
-        immortal: number;
-        archon: number;
+import { System, SystemWrapper } from '../types/agent';
+interface CombatState {
+    armyComposition: {
+        [unitType: number]: number;
     };
-    mainArmyPosition?: Position;
-    harassSquadPosition?: Position;
+    defensivePositions: Array<{
+        x: number;
+        y: number;
+    }>;
+    attackThreshold: number;
+    retreatThreshold: number;
 }
-declare class CombatSystem extends System {
+declare class CombatManager implements System {
+    _system: any;
     state: CombatState;
-    private organizeArmy;
-    private calculateArmyPosition;
-    private controlArmyGroup;
-    private controlMainArmy;
-    private controlHarassSquad;
-    private isValidHarassTarget;
-    constructor(options: {
-        defaultOptions: {
-            state: CombatState;
-        };
-    });
+    constructor();
+    pause(): void;
+    unpause(): void;
+    setState(newState: Partial<CombatState>): void;
+    setup(world: any): void;
+    private initProtossCombat;
+    private initTerranCombat;
+    private initZergCombat;
+    manageCombat(world: any): Promise<void>;
+    private calculateArmyStrength;
+    private attackMove;
+    private defensiveRetreat;
+    private maintainFormation;
 }
-export declare function createCombatSystem(options: {
-    defaultOptions: {
-        state: CombatState;
-    };
-}): CombatSystem;
+export declare function createCombatManager(): SystemWrapper<CombatManager>;
 export {};

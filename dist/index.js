@@ -30,11 +30,14 @@ async function initializeBot() {
 async function startGame(bot) {
     try {
         logger_1.Logger.log('Starting SC2 game');
-        const engine = createEngine();
+        const engine = createEngine({
+            host: '127.0.0.1',
+            port: 5000
+        });
         await engine.connect();
         logger_1.Logger.log('Connected to SC2 client');
         // Run game against Elite AI
-        await engine.runGame('Romanticide LE', [
+        await engine.runGame('AcropolisLE', [
             createPlayer({ race: enums_1.Race.Protoss, type: enums_1.PlayerType.Participant }, bot),
             createPlayer({ race: enums_1.Race.Random, type: enums_1.PlayerType.Computer, difficulty: enums_1.Difficulty.VeryHard }),
         ]);

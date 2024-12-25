@@ -46,7 +46,7 @@ class ScoutManager implements System {
         const scoutUnits = resources.units.getByType(scoutUnitType);
 
         if (scoutUnits.length > 0) {
-            this.state.scoutingUnits = scoutUnits.map(unit => unit.tag);
+            this.state.scoutingUnits = scoutUnits.map((unit: {tag: number}) => unit.tag);
             Logger.log(`Initialized scout units for ${Race[race]}`);
         } else {
             Logger.log('No scout units available');

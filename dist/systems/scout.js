@@ -1,152 +1,133 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createScoutSystem = createScoutSystem;
-const create_system_1 = require("../utils/create-system");
+exports.createScoutManager = createScoutManager;
+const enums_1 = require("../constants/enums");
 const logger_1 = require("../utils/logger");
-const unit_type_1 = require("../constants/unit-type");
-class ScoutSystem extends create_system_1.System {
-    getScoutTargets(resources) {
-        const { map } = resources;
-        const targets = [];
-        // Get all possible enemy base locations
-        const startingPositions = map.getStartingPositions();
-        const enemyExpansions = map.getExpansions('enemy');
-        // Add main base locations
-        startingPositions.forEach(pos => targets.push(pos));
-        // Add natural expansions
-        enemyExpansions
-            .filter(exp => exp.mineralFields.length >= 8) // Only consider rich expansions
-            .forEach(exp => targets.push(exp.townhallPosition));
-        return targets;
+class ScoutManager {
+    constructor() {
+        this.state = {
+            scoutingUnits: [],
+            exploredPositions: [],
+            lastScoutTime: 0,
+            scoutInterval: 300 // Scout every 300 game loops (roughly every 5 seconds)
+        };
+        this._system = {};
     }
-    async assignScoutWorker(resources) {
-        const { units, actions, frame } = resources;
-        const currentGameLoop = frame.getGameLoop();
-        // Only scout if we haven't scouted recently
-        if (currentGameLoop - this.state.lastScoutTime < 1000)
+    pause() {
+        logger_1.Logger.log('Scout manager paused');
+    }
+    unpause() {
+        logger_1.Logger.log('Scout manager resumed');
+    }
+    setState(newState) {
+        this.state = { ...this.state, ...newState };
+    }
+    setup(world) {
+        const resources = world.resources.get();
+        const { race } = world.agent.settings;
+        // Select appropriate scouting unit based on race
+        const scoutUnitType = this.getScoutUnitType(race);
+        const scoutUnits = resources.units.getByType(scoutUnitType);
+        if (scoutUnits.length > 0) {
+            this.state.scoutingUnits = scoutUnits.map((unit) => unit.tag);
+            logger_1.Logger.log(`Initialized scout units for ${enums_1.Race[race]}`);
+        }
+        else {
+            logger_1.Logger.log('No scout units available');
+        }
+    }
+    getScoutUnitType(race) {
+        switch (race) {
+            case enums_1.Race.Protoss: return 71; // Probe
+            case enums_1.Race.Terran: return 45; // SCV
+            case enums_1.Race.Zerg: return 104; // Drone
+            default: return 71; // Default to Probe
+        }
+    }
+    async scout(world) {
+        const resources = world.resources.get();
+        const { units, map, actions } = resources;
+        const currentGameLoop = resources.frame.getGameLoop();
+        // Only scout periodically
+        if (currentGameLoop - this.state.lastScoutTime < this.state.scoutInterval) {
             return;
-        // Don't reassign if we already have a scout
-        if (this.state.scoutingUnit) {
-            const existingScout = units.getWorkers().find(w => w.tag === this.state.scoutingUnit);
-            if (existingScout)
-                return;
         }
-        // Get a worker to scout with
-        const workers = units.getWorkers();
-        if (workers.length < 15)
-            return; // Don't scout too early
-        const scout = workers[0]; // Get first available worker
-        this.setState({
-            scoutingUnit: scout.tag,
-            lastScoutTime: currentGameLoop
-        });
-        // Send to first unexplored target
-        const targets = this.getScoutTargets(resources);
-        const unexploredTargets = targets.filter(pos => !resources.map.isVisible(pos));
-        if (unexploredTargets.length > 0) {
-            await actions.move([scout], unexploredTargets[0], true);
+        // Get scout units
+        const scoutUnits = this.state.scoutingUnits
+            .map(tag => units.getById(tag)[0])
+            .filter((unit) => unit !== undefined && !unit.orders?.length);
+        if (scoutUnits.length === 0) {
+            return;
+        }
+        // Find unexplored map positions
+        const startPositions = map.getStartingPositions();
+        const unexploredPositions = startPositions.filter(pos => !this.state.exploredPositions.some(explored => this.positionsMatch(explored, pos)));
+        if (unexploredPositions.length > 0) {
+            const targetPosition = unexploredPositions[0];
+            // Send scout to unexplored position
+            await actions.move(scoutUnits, targetPosition);
+            // Track explored positions
+            this.state.exploredPositions.push(targetPosition);
+            this.state.lastScoutTime = currentGameLoop;
+            logger_1.Logger.log(`Scouting unexplored position: ${JSON.stringify(targetPosition)}`);
         }
     }
-    async manageObserverScouts(resources) {
-        const { units, actions } = resources;
-        const observers = units.getById(unit_type_1.OBSERVER);
-        if (observers.length === 0) {
-            // Try to build an observer if we have a robo facility
-            const robos = units.getById(unit_type_1.ROBOTICSFACILITY, { buildProgress: 1 });
-            if (robos.length > 0) {
-                await actions.train(unit_type_1.OBSERVER, robos[0]);
+    positionsMatch(pos1, pos2, tolerance = 5) {
+        return (Math.abs(pos1.x - pos2.x) <= tolerance &&
+            Math.abs(pos1.y - pos2.y) <= tolerance);
+    }
+    analyzeEnemyBase(world) {
+        const resources = world.resources.get();
+        const enemyUnits = resources.units.getById(0, { alliance: 'enemy' });
+        if (enemyUnits.length > 0) {
+            // Determine enemy race based on units
+            const enemyRace = this.determineEnemyRace(enemyUnits);
+            if (enemyRace) {
+                this.state.enemyRace = enemyRace;
+                logger_1.Logger.log(`Enemy race detected: ${enums_1.Race[enemyRace]}`);
             }
-            return;
-        }
-        // Update observer patrol points
-        const patrolPoints = this.state.observerScoutLocations;
-        if (patrolPoints.length === 0) {
-            const expansions = resources.map.getExpansions('enemy');
-            this.setState({
-                observerScoutLocations: expansions.map(exp => exp.townhallPosition)
-            });
-            return;
-        }
-        // Move observers between patrol points
-        await Promise.all(observers.map(async (observer, index) => {
-            const targetPoint = patrolPoints[index % patrolPoints.length];
-            await actions.move([observer], targetPoint, true);
-        }));
-    }
-    updateEnemyIntel(resources) {
-        const { map } = resources;
-        const enemyBases = map.getExpansions('enemy')
-            .filter(exp => exp.mineralFields.some(field => !map.isVisible(field.pos)));
-        this.setState({ enemyExpansions: enemyBases.length });
-    }
-    constructor(options) {
-        super({
-            name: 'ScoutSystem',
-            type: 'scout',
-            defaultOptions: options.defaultOptions,
-            async onStep({ resources }) {
-                try {
-                    const resourcesObj = resources.get();
-                    // Early game worker scouting
-                    await this.assignScoutWorker(resourcesObj);
-                    // Mid-game observer scouting
-                    await this.manageObserverScouts(resourcesObj);
-                    // Update enemy information
-                    this.updateEnemyIntel(resourcesObj);
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in ScoutSystem onStep: ${error}`, 'error');
-                }
-            },
-            async onEnemyFirstSeen({ resources }, unit) {
-                try {
-                    // Update known enemy structures
-                    if (unit.isStructure()) {
-                        const structures = [...this.state.knownEnemyStructures];
-                        structures.push({
-                            position: unit.pos,
-                            type: unit.type,
-                            lastSeen: resources.get().frame.getGameLoop()
-                        });
-                        this.setState({ knownEnemyStructures: structures });
-                        // Update enemy tech path based on structures
-                        this.updateEnemyTechPath(unit.type);
-                    }
-                }
-                catch (error) {
-                    logger_1.Logger.log(`Error in ScoutSystem onEnemyFirstSeen: ${error}`, 'error');
-                }
+            // Find enemy base location
+            const baseLocation = this.findEnemyBaseLocation(enemyUnits);
+            if (baseLocation) {
+                this.state.enemyBaseLocation = baseLocation;
+                logger_1.Logger.log(`Enemy base location found: ${JSON.stringify(baseLocation)}`);
             }
-        });
+        }
     }
-    updateEnemyTechPath(structureType) {
-        // Update enemy tech path based on first seen tech structure
-        if (this.state.enemyTech !== 'unknown')
-            return;
-        let techPath = 'unknown';
-        switch (structureType) {
-            case 62: // GATEWAY
-                techPath = 'gateway';
-                break;
-            case 71: // ROBOTICS_FACILITY
-                techPath = 'robo';
-                break;
-            case 64: // STARGATE
-                techPath = 'stargate';
-                break;
-            case 69: // DARK_SHRINE
-                techPath = 'dark';
-                break;
-            case 67: // TEMPLAR_ARCHIVES
-                techPath = 'templar';
-                break;
+    determineEnemyRace(enemyUnits) {
+        const raceUnitTypes = {
+            [enums_1.Race.Protoss]: [59, 63, 65, 74], // Nexus, Gateway, Zealot, Stalker
+            [enums_1.Race.Terran]: [41, 48, 51, 54], // Command Center, Barracks, Marine, Marauder
+            [enums_1.Race.Zerg]: [101, 106, 105, 108], // Hatchery, Spawning Pool, Zergling, Roach
+            [enums_1.Race.NoRace]: [],
+            [enums_1.Race.Random]: [] // Add Random race with empty array
+        };
+        for (const [race, unitTypes] of Object.entries(raceUnitTypes)) {
+            if (enemyUnits.some((unit) => unitTypes.includes(unit.type))) {
+                return parseInt(race);
+            }
         }
-        if (techPath !== 'unknown') {
-            this.setState({ enemyTech: techPath });
+        return undefined;
+    }
+    findEnemyBaseLocation(enemyUnits) {
+        // Look for townhall-type structures
+        const townhallTypes = [59, 41, 101]; // Nexus, Command Center, Hatchery
+        const townhalls = enemyUnits.filter(unit => townhallTypes.includes(unit.type));
+        if (townhalls.length > 0) {
+            // Return position of first townhall found
+            return townhalls[0].pos;
         }
+        return undefined;
     }
 }
-function createScoutSystem(options) {
-    return new ScoutSystem(options);
+function createScoutManager() {
+    const manager = new ScoutManager();
+    const wrapper = async (world) => {
+        await manager.scout(world);
+        manager.analyzeEnemyBase(world);
+    };
+    wrapper._system = manager;
+    wrapper.setup = manager.setup.bind(manager);
+    return wrapper;
 }
 //# sourceMappingURL=scout.js.map

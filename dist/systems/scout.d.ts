@@ -1,37 +1,28 @@
-import { System, SystemState } from '../utils/create-system';
-interface Position {
-    x: number;
-    y: number;
-}
-type TechPath = 'unknown' | 'gateway' | 'robo' | 'stargate' | 'dark' | 'templar';
-interface ScoutState extends SystemState {
+import { Race } from '../constants/enums';
+import { System, SystemWrapper } from '../types/agent';
+import { Position } from '../types/base-types';
+interface ScoutState {
+    scoutingUnits: number[];
+    exploredPositions: Position[];
+    enemyBaseLocation?: Position;
+    enemyRace?: Race;
     lastScoutTime: number;
-    enemyTech: TechPath;
-    enemyExpansions: number;
-    scoutingUnit?: string;
-    observerScoutLocations: Position[];
-    knownEnemyStructures: {
-        position: Position;
-        type: number;
-        lastSeen: number;
-    }[];
+    scoutInterval: number;
 }
-declare class ScoutSystem extends System {
+declare class ScoutManager implements System {
+    _system: any;
     state: ScoutState;
-    private getScoutTargets;
-    private assignScoutWorker;
-    private manageObserverScouts;
-    private updateEnemyIntel;
-    constructor(options: {
-        defaultOptions: {
-            state: ScoutState;
-        };
-    });
-    private updateEnemyTechPath;
+    constructor();
+    pause(): void;
+    unpause(): void;
+    setState(newState: Partial<ScoutState>): void;
+    setup(world: any): void;
+    private getScoutUnitType;
+    scout(world: any): Promise<void>;
+    private positionsMatch;
+    analyzeEnemyBase(world: any): void;
+    private determineEnemyRace;
+    private findEnemyBaseLocation;
 }
-export declare function createScoutSystem(options: {
-    defaultOptions: {
-        state: ScoutState;
-    };
-}): ScoutSystem;
+export declare function createScoutManager(): SystemWrapper<ScoutManager>;
 export {};
